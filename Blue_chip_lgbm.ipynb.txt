@@ -1,0 +1,597 @@
+{
+  "cells": [
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "a1a0fb0f"
+      },
+      "outputs": [],
+      "source": [
+        "import numpy as np\n",
+        "import pandas as pd\n",
+        "\n",
+        "import os\n",
+        "import random\n",
+        "from collections import defaultdict\n",
+        "from statistics import mean\n",
+        "\n",
+        "from sklearn.model_selection import StratifiedKFold\n",
+        "from sklearn.preprocessing import OneHotEncoder, StandardScaler\n",
+        "from sklearn.compose import ColumnTransformer\n",
+        "from sklearn import metrics\n",
+        "from sklearn.neighbors import KNeighborsRegressor\n",
+        "\n",
+        "# from xgboost import XGBClassifier"
+      ],
+      "id": "a1a0fb0f"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "6d2cd745"
+      },
+      "source": [
+        "## Load data"
+      ],
+      "id": "6d2cd745"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "9HniwdSXz0gO",
+        "outputId": "81508ed3-a988-43d4-fdce-e666f8124e9d"
+      },
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "Drive already mounted at /content/drive; to attempt to forcibly remount, call drive.mount(\"/content/drive\", force_remount=True).\n"
+          ]
+        }
+      ],
+      "source": [
+        "from google.colab import drive\n",
+        "drive.mount('/content/drive')"
+      ],
+      "id": "9HniwdSXz0gO"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "191b1781"
+      },
+      "outputs": [],
+      "source": [
+        "train = pd.read_csv('/content/drive/MyDrive/kgl/train.csv')\n",
+        "test = pd.read_csv('/content/drive/MyDrive/kgl/test.csv')\n",
+        "sub = pd.read_csv('/content/drive/MyDrive/kgl/sample_submission (1).csv')\n",
+        "\n",
+        "orig = pd.read_csv('/content/drive/MyDrive/kgl/WA_Fn-UseC_-HR-Employee-Attrition.csv')\n",
+        "\n",
+        "\n",
+        "orig.loc[orig['Attrition'] == 'No', 'Attrition'] = 0\n",
+        "orig.loc[orig['Attrition'] == 'Yes', 'Attrition'] = 1\n",
+        "orig = orig.astype({'Attrition': 'int'})"
+      ],
+      "id": "191b1781"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "6078cccc"
+      },
+      "source": [
+        "## Feature preprocessing and engineering"
+      ],
+      "id": "6078cccc"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "94798693",
+        "outputId": "b1977d61-9d04-49ed-b49f-05bc85e3dddf"
+      },
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "[]\n",
+            "[]\n",
+            "30 30\n"
+          ]
+        }
+      ],
+      "source": [
+        "TARGET = 'Attrition'\n",
+        "\n",
+        "ALL_FEATURES = train.columns.to_list()[1:34]\n",
+        "\n",
+        "# drop features with constant values\n",
+        "ALL_FEATURES.remove('Over18')\n",
+        "ALL_FEATURES.remove('StandardHours')\n",
+        "ALL_FEATURES.remove('EmployeeCount')\n",
+        "\n",
+        "# ordinal categorical - use Label Scaling with appropriate ordinal order\n",
+        "ORD_CAT_FEATURES = ['BusinessTravel']\n",
+        "ORD_CAT_CATEGORIES = ['Non-Travel', 'Travel_Rarely', 'Travel_Frequently']\n",
+        "\n",
+        "# these can be left as they are\n",
+        "ORD_NUM_FEATURES = ['Education', 'JobInvolvement', 'PerformanceRating',\n",
+        "                    'RelationshipSatisfaction', 'WorkLifeBalance',\n",
+        "                    'StockOptionLevel', 'JobLevel', 'JobSatisfaction',\n",
+        "                    'EnvironmentSatisfaction']\n",
+        "\n",
+        "# one-hot encoding\n",
+        "CAT_FEATURES = ['Department', 'EducationField', 'Gender', 'MaritalStatus', 'OverTime', 'JobRole' ]\n",
+        "### JobRole has 9 categories and will produce a lot of features with one-hot encoding\n",
+        "\n",
+        "# center and scale\n",
+        "CON_FEATURES = ['MonthlyRate', 'MonthlyIncome', 'DailyRate', 'HourlyRate', 'Age',\n",
+        "                'DistanceFromHome', 'TotalWorkingYears', 'YearsAtCompany', 'YearsInCurrentRole',\n",
+        "                'YearsWithCurrManager', 'PercentSalaryHike', 'NumCompaniesWorked', 'TrainingTimesLastYear',\n",
+        "                'YearsSinceLastPromotion']\n",
+        "\n",
+        "# verify the lists are consistent\n",
+        "COMBINED_FEATURES = ORD_CAT_FEATURES + ORD_NUM_FEATURES + CAT_FEATURES + CON_FEATURES\n",
+        "print([f for f in COMBINED_FEATURES if f not in ALL_FEATURES ])\n",
+        "print([f for f in ALL_FEATURES if f not in COMBINED_FEATURES])\n",
+        "print(len(COMBINED_FEATURES), len(ALL_FEATURES))"
+      ],
+      "id": "94798693"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "32f0c240"
+      },
+      "outputs": [],
+      "source": [
+        "# copy to post-processed dataframes, removing dropped columns\n",
+        "# copy to post-processed variables to preserve original (in case it is needed later)\n",
+        "train_postpro = train.loc[:, ALL_FEATURES + [TARGET]].copy()\n",
+        "test_postpro = test.loc[:, ALL_FEATURES].copy()\n",
+        "orig_postpro = orig.loc[:, ALL_FEATURES + [TARGET]].copy()"
+      ],
+      "id": "32f0c240"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "12a79e46"
+      },
+      "source": [
+        "### Winsorization of competition data\n",
+        "\n",
+        "There are a couple of outlier values in the competion data that don't make sense relative to the original data.  Most likely these are a result of the probabilisitic generation of the data leading to highly unlikely but not impossible values.  (Thanks to @craigmthomas for details in his notebook [1]"
+      ],
+      "id": "12a79e46"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "ee167800"
+      },
+      "outputs": [],
+      "source": [
+        "train_postpro.loc[train['Education'] == 15, 'Education'] = 5 # 5 is the max possible value based on the original data\n",
+        "train_postpro.loc[train['JobLevel'] == 7, 'JobLevel'] = 5   # 5 is the max possible value based on the original data"
+      ],
+      "id": "ee167800"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "d39c513e"
+      },
+      "source": [
+        "### Label encoding\n",
+        "\n",
+        "Ordinal categoric variables are converted to ordinal numerical values"
+      ],
+      "id": "d39c513e"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "bfe1fb7c"
+      },
+      "outputs": [],
+      "source": [
+        "# the OrdinalEncoder in scikit-learn doesn't seem to take my ordering of values\n",
+        "# so I'm rolling my own here\n",
+        "for idx, value in enumerate(ORD_CAT_CATEGORIES):\n",
+        "    train_postpro.loc[train_postpro['BusinessTravel'] == value, 'BusinessTravel'] = idx\n",
+        "    test_postpro.loc[test_postpro['BusinessTravel'] == value, 'BusinessTravel'] = idx\n",
+        "    orig_postpro.loc[orig_postpro['BusinessTravel'] == value, 'BusinessTravel'] = idx\n",
+        "\n",
+        "train_postpro = train_postpro.astype({'BusinessTravel': 'int'})\n",
+        "test_postpro = test_postpro.astype({'BusinessTravel': 'int'})\n",
+        "orig_postpro = orig_postpro.astype({'BusinessTravel': 'int'})"
+      ],
+      "id": "bfe1fb7c"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "6d9b1821"
+      },
+      "source": [
+        "### One-hot encoding\n",
+        "\n",
+        "One-hot encoding expands the total number of columns.  There may be other ways to think about this, such as leave-one-out encoding."
+      ],
+      "id": "6d9b1821"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "cbb604e1",
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "outputId": "11647d67-93dd-44af-c58d-678ca91d0417"
+      },
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "/usr/local/lib/python3.10/dist-packages/sklearn/preprocessing/_encoders.py:868: FutureWarning: `sparse` was renamed to `sparse_output` in version 1.2 and will be removed in 1.4. `sparse_output` is ignored unless you leave `sparse` to its default value.\n",
+            "  warnings.warn(\n",
+            "/usr/local/lib/python3.10/dist-packages/sklearn/preprocessing/_encoders.py:868: FutureWarning: `sparse` was renamed to `sparse_output` in version 1.2 and will be removed in 1.4. `sparse_output` is ignored unless you leave `sparse` to its default value.\n",
+            "  warnings.warn(\n",
+            "/usr/local/lib/python3.10/dist-packages/sklearn/preprocessing/_encoders.py:868: FutureWarning: `sparse` was renamed to `sparse_output` in version 1.2 and will be removed in 1.4. `sparse_output` is ignored unless you leave `sparse` to its default value.\n",
+            "  warnings.warn(\n",
+            "/usr/local/lib/python3.10/dist-packages/sklearn/preprocessing/_encoders.py:868: FutureWarning: `sparse` was renamed to `sparse_output` in version 1.2 and will be removed in 1.4. `sparse_output` is ignored unless you leave `sparse` to its default value.\n",
+            "  warnings.warn(\n",
+            "/usr/local/lib/python3.10/dist-packages/sklearn/preprocessing/_encoders.py:868: FutureWarning: `sparse` was renamed to `sparse_output` in version 1.2 and will be removed in 1.4. `sparse_output` is ignored unless you leave `sparse` to its default value.\n",
+            "  warnings.warn(\n",
+            "/usr/local/lib/python3.10/dist-packages/sklearn/preprocessing/_encoders.py:868: FutureWarning: `sparse` was renamed to `sparse_output` in version 1.2 and will be removed in 1.4. `sparse_output` is ignored unless you leave `sparse` to its default value.\n",
+            "  warnings.warn(\n"
+          ]
+        }
+      ],
+      "source": [
+        "# one hot encoding of categorical features\n",
+        "new_cat_features = []\n",
+        "\n",
+        "for feature in CAT_FEATURES:\n",
+        "    ohe = OneHotEncoder()\n",
+        "    train_temp = pd.DataFrame(train_postpro[feature])\n",
+        "    test_temp = pd.DataFrame(test_postpro[feature])\n",
+        "    orig_temp = pd.DataFrame(orig_postpro[feature])\n",
+        "\n",
+        "\n",
+        "    merged_temp = pd.concat([train_temp,test_temp,orig_temp],\n",
+        "                        ignore_index=True)\n",
+        "\n",
+        "    ohe = OneHotEncoder(sparse = False, drop = 'first')\n",
+        "    ohe.fit(merged_temp)\n",
+        "\n",
+        "    new_columns = [\"{}_{}_ohe\".format(feature, val) for val in ohe.categories_[0][1:]]\n",
+        "    new_cat_features.extend(new_columns)\n",
+        "\n",
+        "    train_ohe_column = pd.DataFrame(ohe.transform(train_temp), columns = new_columns, dtype = 'int')\n",
+        "    test_ohe_column = pd.DataFrame(ohe.transform(test_temp), columns = new_columns, dtype = 'int')\n",
+        "    orig_ohe_column = pd.DataFrame(ohe.transform(orig_temp), columns = new_columns, dtype = 'int')\n",
+        "\n",
+        "    for column in new_columns:\n",
+        "        train_postpro[column] = train_ohe_column[column]\n",
+        "        test_postpro[column] = test_ohe_column[column]\n",
+        "        orig_postpro[column] = orig_ohe_column[column]\n",
+        "        ALL_FEATURES.append(column)\n",
+        "\n",
+        "for feature in CAT_FEATURES:\n",
+        "    ALL_FEATURES.remove(feature)\n",
+        "\n",
+        "train_postpro.drop(CAT_FEATURES, axis = 1, inplace = True)\n",
+        "# train_postpro.drop(\"id\", axis = 1, inplace = True)\n",
+        "\n",
+        "test_postpro.drop(CAT_FEATURES, axis = 1, inplace = True)\n",
+        "# test_postpro.drop(\"id\", axis = 1, inplace = True)\n",
+        "\n",
+        "orig_postpro.drop(CAT_FEATURES, axis = 1, inplace = True)\n",
+        "# orig_postpro.drop('EmployeeNumber', axis = 1, inplace = True)\n",
+        "\n",
+        "CAT_FEATURES = new_cat_features"
+      ],
+      "id": "cbb604e1"
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "fc12a9a5"
+      },
+      "source": [
+        "### Center and scale"
+      ],
+      "id": "fc12a9a5"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "7e06fe80"
+      },
+      "outputs": [],
+      "source": [
+        "for feature in CON_FEATURES:\n",
+        "    mu = np.mean(train_postpro[feature])\n",
+        "    sigma = np.std(train_postpro[feature])\n",
+        "    train_postpro[feature] = (train_postpro[feature] - mu) / sigma\n",
+        "    test_postpro[feature] = (test_postpro[feature] - mu) / sigma\n",
+        "    orig_postpro[feature] = (orig_postpro[feature] - mu) / sigma"
+      ],
+      "id": "7e06fe80"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "08f98a07-15f9-4c3e-b971-a7203e3136f1"
+      },
+      "outputs": [],
+      "source": [
+        "from xgboost import XGBClassifier\n",
+        "from sklearn.metrics import roc_auc_score"
+      ],
+      "id": "08f98a07-15f9-4c3e-b971-a7203e3136f1"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "88510021-5191-4023-b780-73de6ce1f3c2"
+      },
+      "outputs": [],
+      "source": [
+        "import warnings\n",
+        "warnings.filterwarnings(\"ignore\")"
+      ],
+      "id": "88510021-5191-4023-b780-73de6ce1f3c2"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "sChzNYL28cEO"
+      },
+      "outputs": [],
+      "source": [
+        "from catboost import CatBoostClassifier\n",
+        "from lightgbm import LGBMClassifier\n",
+        "from xgboost import XGBClassifier"
+      ],
+      "id": "sChzNYL28cEO"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "CAT_FEATURES"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "zf0U5lv8vBPf",
+        "outputId": "aee19963-8853-4085-a436-969c74d40a08"
+      },
+      "id": "zf0U5lv8vBPf",
+      "execution_count": null,
+      "outputs": [
+        {
+          "output_type": "execute_result",
+          "data": {
+            "text/plain": [
+              "['Department_Research & Development_ohe',\n",
+              " 'Department_Sales_ohe',\n",
+              " 'EducationField_Life Sciences_ohe',\n",
+              " 'EducationField_Marketing_ohe',\n",
+              " 'EducationField_Medical_ohe',\n",
+              " 'EducationField_Other_ohe',\n",
+              " 'EducationField_Technical Degree_ohe',\n",
+              " 'Gender_Male_ohe',\n",
+              " 'MaritalStatus_Married_ohe',\n",
+              " 'MaritalStatus_Single_ohe',\n",
+              " 'OverTime_Yes_ohe',\n",
+              " 'JobRole_Human Resources_ohe',\n",
+              " 'JobRole_Laboratory Technician_ohe',\n",
+              " 'JobRole_Manager_ohe',\n",
+              " 'JobRole_Manufacturing Director_ohe',\n",
+              " 'JobRole_Research Director_ohe',\n",
+              " 'JobRole_Research Scientist_ohe',\n",
+              " 'JobRole_Sales Executive_ohe',\n",
+              " 'JobRole_Sales Representative_ohe']"
+            ]
+          },
+          "metadata": {},
+          "execution_count": 13
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "from sklearn.model_selection import StratifiedKFold\n",
+        "\n",
+        "#cross_validator to splite the data into folds\n",
+        "folds=StratifiedKFold(n_splits=4,shuffle=True,random_state=0)\n",
+        "\n",
+        "#a dataframe to store the predictions made by each fold\n",
+        "predictions_df=pd.DataFrame()\n",
+        "\n",
+        "#list to save the mean absolute errors from validatingon each folds\n",
+        "roc_val=[]\n",
+        "roc_X=[]\n",
+        "\n",
+        "\n",
+        "params_lgb={'colsample_bytree': 0.16636809218953558, 'learning_rate': 0.08959532930443485, 'max_depth': 3, 'min_split_gain': 0.3006655968480028, 'num_leaves': 93, 'reg_alpha': 0, 'reg_lambda': 0, 'subsample': 0.14410943269941368}\n",
+        "#params_lgb={'colsample_bytree': 0.7554077353021186, 'feature_fraction': 0.8932227557567608, 'learning_rate': 0.08864941270615154, 'max_depth': 1, 'min_child_samples': 255.0, 'min_child_weight': 0.06396606675030375, 'min_data_in_leaf': 3, 'min_split_gain': 0.19211036977624057, 'num_leaves': 58, 'reg_alpha': 0, 'reg_lambda': 3, 'subsample': 0.9588843884776579}\n",
+        "\n",
+        "model_lgb=LGBMClassifier(**params_lgb, verbose=-100,random_state=0,early_stopping_rounds=200,n_estimators=10000)\n",
+        "\n",
+        "\n",
+        "#train model, make predictions and check the validation accuracy on  each fold\n",
+        "for i,(train_index,test_index) in enumerate(folds.split(train_postpro[ALL_FEATURES],train_postpro[TARGET])):\n",
+        "    train_fold=train_postpro[ALL_FEATURES].iloc[train_index]\n",
+        "    extra_data=orig_postpro[ALL_FEATURES]\n",
+        "    train_fold=pd.concat([train_fold,extra_data])\n",
+        "    val_fold=train_postpro[ALL_FEATURES].iloc[test_index]\n",
+        "    y_fold=train_postpro[TARGET].iloc[train_index]\n",
+        "    y_fold=pd.concat([y_fold,orig_postpro[TARGET]])\n",
+        "    y_val_fold=train_postpro[TARGET].iloc[test_index]\n",
+        "    model_lgb.fit(train_fold,y_fold,eval_set=[(val_fold,y_val_fold)],eval_metric=\"AUC\" )\n",
+        "\n",
+        "\n",
+        "    print(i+1)\n",
+        "    prediction=(model_lgb.predict_proba(test_postpro[ALL_FEATURES])[:, 1])#model.predict_proba(test)[:,1]\n",
+        "    predictions_df[i]=prediction\n",
+        "    roc_val.append(roc_auc_score(y_val_fold, model_lgb.predict_proba(val_fold)[:, 1]))\n",
+        "    roc_X.append(roc_auc_score(y_fold,model_lgb.predict_proba(train_fold)[:, 1]))\n",
+        "print(roc_val)"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "SJCZt0BFDSDj",
+        "outputId": "92cec673-06dd-497d-f484-0b51896a743b"
+      },
+      "id": "SJCZt0BFDSDj",
+      "execution_count": null,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "1\n",
+            "2\n",
+            "3\n",
+            "4\n",
+            "[0.897027027027027, 0.8758807588075881, 0.8204878048780486, 0.8778319783197831]\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "e8ND3crd-ZPR",
+        "outputId": "78a36de6-044f-4f3b-bc4f-0ae2fe7b3a79"
+      },
+      "outputs": [
+        {
+          "output_type": "execute_result",
+          "data": {
+            "text/plain": [
+              "0.9398636345398479"
+            ]
+          },
+          "metadata": {},
+          "execution_count": 15
+        }
+      ],
+      "source": [
+        "np.mean(roc_X)"
+      ],
+      "id": "e8ND3crd-ZPR"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "yeYn0RWQ-h-Q",
+        "outputId": "a4800b44-22b4-4390-ec5f-72308f244bb3"
+      },
+      "outputs": [
+        {
+          "output_type": "execute_result",
+          "data": {
+            "text/plain": [
+              "0.8678068922581117"
+            ]
+          },
+          "metadata": {},
+          "execution_count": 16
+        }
+      ],
+      "source": [
+        "np.mean(roc_val)"
+      ],
+      "id": "yeYn0RWQ-h-Q"
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {
+        "id": "r1L0j1S_-wkf"
+      },
+      "outputs": [],
+      "source": [
+        "predictions=predictions_df.min(axis=1)\n",
+        "sub=pd.DataFrame({\"id\":test[\"id\"],\"Attrition\":predictions}).set_index(\"id\")\n",
+        "sub.to_csv(\"sub_min_ensemble.csv\")"
+      ],
+      "id": "r1L0j1S_-wkf"
+    }
+  ],
+  "metadata": {
+    "colab": {
+      "provenance": []
+    },
+    "kernelspec": {
+      "display_name": "Python 3 (ipykernel)",
+      "language": "python",
+      "name": "python3"
+    },
+    "language_info": {
+      "codemirror_mode": {
+        "name": "ipython",
+        "version": 3
+      },
+      "file_extension": ".py",
+      "mimetype": "text/x-python",
+      "name": "python",
+      "nbconvert_exporter": "python",
+      "pygments_lexer": "ipython3",
+      "version": "3.11.5"
+    },
+    "papermill": {
+      "default_parameters": {},
+      "duration": 4704.843146,
+      "end_time": "2023-01-21T00:15:40.074672",
+      "environment_variables": {},
+      "exception": null,
+      "input_path": "__notebook__.ipynb",
+      "output_path": "__notebook__.ipynb",
+      "parameters": {},
+      "start_time": "2023-01-20T22:57:15.231526",
+      "version": "2.3.4"
+    }
+  },
+  "nbformat": 4,
+  "nbformat_minor": 5
+}
